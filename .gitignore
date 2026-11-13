@@ -1,0 +1,37 @@
+
+# Entornos virtuales
+.venv/
+venv/
+ENV/
+
+# Variables de entorno y credenciales
+.env
+.env.*
+!.env.example
+
+# Python: caché y bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Pytest y cobertura
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Bases de datos y logs locales
+*.log
+*.sqlite3
+
+# Django
+media/
+staticfiles/
+
+# IDEs
+.vscode/
+.idea/
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini

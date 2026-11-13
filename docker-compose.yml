@@ -1,0 +1,33 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env.docker
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: vozvecinal_db
+      MYSQL_USER: vozvecinal_user
+      MYSQL_PASSWORD: vozvecinal_password
+      MYSQL_ROOT_PASSWORD: root_docker_password
+    volumes:
+      - mysqldata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot_docker_password"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  redis:
+    image: redis:7
+
+volumes:
+  mysqldata:

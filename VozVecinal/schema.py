@@ -1,0 +1,1 @@
+from reclamos.schema import schema  # noqa: F401
