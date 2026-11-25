@@ -1,0 +1,255 @@
+# 🏛️ VozVecinal — Backend API
+
+API y servidor en tiempo real para la plataforma municipal **VozVecinal**, desarrollado con **Django**, **Django REST Framework (DRF)**, **Graphene-Django (GraphQL)** y **Django Channels (WebSockets + Redis)**.
+
+---
+
+## 📋 Tabla de Contenidos
+
+- [Arquitectura y Stack Tecnológico](#arquitectura-y-stack-tecnológico)
+- [Estructura del Proyecto](#estructura-del-proyecto)
+- [Modelos de Dominio](#modelos-de-dominio)
+- [Requisitos Previos](#requisitos-previos)
+- [Variables de Entorno](#variables-de-entorno)
+- [Instalación y Ejecución Local](#instalación-y-ejecución-local)
+- [Inicialización de Datos Base](#inicialización-de-datos-base)
+- [Autenticación y Control de Acceso (RBAC)](#autenticación-y-control-de-acceso-rbac)
+- [Endpoints REST API](#endpoints-rest-api)
+- [Esquema GraphQL](#esquema-graphql)
+- [WebSockets y Presencia en Tiempo Real](#websockets-y-presencia-en-tiempo-real)
+- [Seguridad y Auditoría](#seguridad-y-auditoría)
+
+---
+
+## 🏗️ Arquitectura y Stack Tecnológico
+
+El proyecto sigue una **arquitectura en capas** para desacoplar la lógica de negocio de los protocolos de transporte (REST, GraphQL y WebSockets):
+
+```text
+Views / GraphQL Resolvers / Consumers
+                │
+                ▼
+         Service Layer          ──► Transacciones ACID (transaction.atomic), Auditoría y Eventos
+                │
+                ▼
+       Repository Layer         ──► Consultas ORM optimizadas (select_related / prefetch_related)
+                │
+                ▼
+        Models (MySQL)          +   Redis (Channel Layer & Presencia en vivo)
+```
+
+* **Framework Web:** Django + Django REST Framework (DRF)
+* **Servidor ASGI / WebSockets:** Daphne + Django Channels + `channels-redis`
+* **API GraphQL:** `graphene-django` con autenticación JWT personalizada
+* **Base de Datos Relacional:** MySQL (`mysqlclient`)
+* **Broker / Caché en Tiempo Real:** Redis (`redis.asyncio`)
+* **Autenticación:** `djangorestframework-simplejwt` + `django-allauth` (Google OAuth2)
+* **Seguridad y Sanitización:** `nh3` (prevención XSS), `django-cors-headers`, `whitenoise`
+
+---
+
+## 📁 Estructura del Proyecto
+
+```text
+backend_python/
+├── VozVecinal/
+│   ├── asgi.py             # Configuración ASGI (HTTP + WebSocket con JWTAuthMiddleware)
+│   ├── schema.py           # Punto de entrada del esquema GraphQL global
+│   ├── settings.py         # Configuración de Django, MySQL, JWT, Allauth, Redis y CORS
+│   └── urls.py             # Enrutamiento raíz (/api/, /graphql/, /accounts/, /admin/)
+├── reclamos/
+│   ├── consumers.py        # Consumer WebSocket para notificaciones y presencia online/offline
+│   ├── graphql_views.py    # Vista GraphQL con soporte para tokens Bearer JWT
+│   ├── models.py           # Entidades del dominio y registro de auditoría SecurityLog
+│   ├── permissions.py      # Clases de permisos RBAC y propiedad de recursos
+│   ├── presence.py         # Gestión atómica en Redis de operadores conectados por categoría
+│   ├── repositories.py     # Abstracción de consultas ORM optimizadas (evita N+1)
+│   ├── routing.py          # Rutas WebSocket (/ws/reclamos/publicos/ y /ws/reclamos/<id>/)
+│   ├── schema.py           # Types, Queries y Mutations de GraphQL
+│   ├── serializers.py      # DTOs, validaciones y sanitización HTML/XSS con nh3
+│   ├── services.py         # Lógica de negocio (ReclamoService, NotificationService, AuthService)
+│   ├── urls.py             # Endpoints REST registrados con DefaultRouter
+│   ├── views.py            # ViewSets REST y SocialLoginJWTView
+│   └── ws_auth.py          # Middleware JWT para handshake WebSocket (?token=)
+├── .env                    # Variables de entorno para desarrollo local
+└── .env.docker             # Variables de entorno para despliegue con Docker
+```
+
+---
+
+## 🗄️ Modelos de Dominio
+
+* **`Rol`**: Roles del sistema (`VECINO`, `OPERADOR`, `ADMIN`).
+* **`Usuario`**: Extiende `AbstractUser` añadiendo `rol`, `telefono` y `dni` (único).
+* **`AreaDependencia`**: Dependencias municipales responsables (ej. *Obras y Servicios Públicos*).
+* **`Categoria`**: Clasificación temática vinculada a un `AreaDependencia`.
+* **`Estado`**: Estados del ciclo de vida del reclamo (`Pendiente`, `En Proceso`, `Resuelto`, `Rechazado`).
+* **`Reclamo`**: Entidad principal con `titulo`, `descripcion`, `fecha_creacion`, `usuario`, `categoria` y `estado_actual` (`on_delete=PROTECT`).
+* **`RegistroHistorial`**: Trazabilidad inmutable de cada cambio de estado con `observacion`, `fecha` y `usuario_operador`.
+* **`SecurityLog`**: Auditoría de eventos críticos (`user`, `action`, `detail`, `ip_address`, `created_at`).
+
+---
+
+## ⚙️ Requisitos Previos
+
+* **Python** 3.11 o superior
+* **MySQL** 8.0+ (local o instancia en la nube)
+* **Redis** 6.0+ (requerido para Django Channels y seguimiento de presencia)
+
+---
+
+## 🔐 Variables de Entorno
+
+Crear un archivo `.env` en la raíz de `backend_python/` con las siguientes claves:
+
+```env
+SECRET_KEY=tu-clave-secreta-django
+DEBUG=True
+ALLOWED_HOSTS=127.0.0.1,localhost
+
+# Base de datos MySQL
+DB_NAME=vozvecinal_db
+DB_USER=root
+DB_PASSWORD=tu_password
+DB_HOST=127.0.0.1
+DB_PORT=3306
+
+# Redis (Channel Layer & Presencia)
+REDIS_URL=redis://127.0.0.1:6379
+
+# Google OAuth2 (django-allauth y verificación de id_token)
+GOOGLE_CLIENT_ID=tu-google-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=tu-google-client-secret
+
+# Producción (opcional, separado por comas)
+CSRF_TRUSTED_ORIGINS=
+```
+
+---
+
+## 🚀 Instalación y Ejecución Local
+
+1. **Crear y activar entorno virtual:**
+   ```bash
+   python -m venv venv
+   source venv/bin/activate      # Linux / macOS
+   venv\Scripts\activate         # Windows
+   ```
+
+2. **Instalar dependencias:**
+   ```bash
+   pip install django djangorestframework djangorestframework-simplejwt django-filter django-cors-headers channels channels-redis daphne graphene-django django-allauth google-auth mysqlclient python-dotenv nh3 whitenoise redis
+   ```
+
+3. **Aplicar migraciones a la base de datos:**
+   ```bash
+   python manage.py makemigrations
+   python manage.py migrate
+   ```
+
+4. **Asegurar que Redis esté en ejecución:**
+   ```bash
+   redis-server
+   ```
+
+5. **Iniciar el servidor ASGI (Daphne):**
+   ```bash
+   python manage.py runserver
+   # O directamente con Daphne:
+   daphne -b 127.0.0.1 -p 8000 VozVecinal.asgi:application
+   ```
+
+---
+
+## 🌱 Inicialización de Datos Base
+
+Para poblar automáticamente los roles (`VECINO`, `OPERADOR`, `ADMIN`), los estados iniciales (`Pendiente`, `En Proceso`, `Resuelto`, `Rechazado`) y las categorías base:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/auth/seed_data/
+```
+
+Para crear un superusuario administrador desde consola:
+
+```bash
+python manage.py createsuperuser
+```
+*(Luego asignarle el rol `ADMIN` desde `/admin/` o mediante el endpoint `/api/usuarios/`).*
+
+---
+
+## 🛡️ Autenticación y Control de Acceso (RBAC)
+
+* **JWT Stateless:** Los endpoints protegidos requieren el header `Authorization: Bearer <access_token>`.
+  * Duración `access`: 630 minutos.
+  * Duración `refresh`: 7 días (con rotación y lista negra activadas).
+* **Login Social con Google:**
+  * Flujo web vía `django-allauth` en `/accounts/google/login/` con redirección a `/api/auth/social/jwt/`, que emite los JWT y redirige al frontend (`/login/callback/`).
+  * Flujo API directa vía `POST /api/auth/google/` enviando `{"id_token": "<token_google>"}`.
+* **Matriz de Permisos:**
+  * **Público (`AllowAny`):** lectura de catálogos (`GET`), reclamos públicos anonimizados, estadísticas y health check.
+  * **`VECINO`:** crea reclamos y consulta/edita únicamente los propios (`IsOwnerOrAdminOrOperator`).
+  * **`OPERADOR`:** visualiza todos los reclamos y puede cambiar estados (`PATCH /api/reclamos/<id>/cambiar_estado/`).
+  * **`ADMIN`:** acceso total, incluyendo CRUD de usuarios, roles, áreas, categorías y estados.
+
+---
+
+## 🔌 Endpoints REST API
+
+Base URL por defecto: `http://127.0.0.1:8000/api`
+
+| Método | Ruta | Permisos | Descripción |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/health/` | Público | Estado de salud del servicio (`{"status": "ok"}`). |
+| `POST` | `/api/auth/login/` | Público | Obtiene par de tokens JWT (`access`, `refresh`). |
+| `POST` | `/api/auth/refresh/` | Público | Renueva el `access` token. |
+| `POST` | `/api/auth/register/` | Público | Registro de nuevo usuario con rol `VECINO`. |
+| `POST` | `/api/auth/google/` | Público | Autenticación/registro mediante `id_token` de Google. |
+| `GET` | `/api/auth/me/` | Autenticado | Devuelve datos y rol del usuario actual. |
+| `POST` | `/api/auth/seed_data/` | Público | Inicializa roles, estados y categorías base. |
+| `GET` | `/api/reclamos/` | Autenticado | Lista reclamos (filtrados por dueño si es `VECINO`). |
+| `POST` | `/api/reclamos/` | Autenticado | Crea un reclamo en estado `Pendiente`. |
+| `PATCH` | `/api/reclamos/<id>/cambiar_estado/` | `OPERADOR` / `ADMIN` | Cambia estado y registra observación en historial. |
+| `GET` | `/api/reclamos/publicos/` | Público | Últimos 50 reclamos con datos personales anonimizados. |
+| `GET` | `/api/reclamos/estadisticas/` | Público | Total de reclamos y conteo agrupado por estado. |
+| `CRUD` | `/api/areas/` | Lectura: Público / Escritura: `ADMIN` | Gestión de áreas municipales. |
+| `CRUD` | `/api/categorias/` | Lectura: Público / Escritura: `ADMIN` | Gestión de categorías por área. |
+| `CRUD` | `/api/estados/` | Lectura: Público / Escritura: `ADMIN` | Gestión de estados del ciclo de vida. |
+| `GET` | `/api/roles/` | Autenticado | Consulta de roles disponibles. |
+| `CRUD` | `/api/usuarios/` | `ADMIN` | Administración de usuarios y asignación de roles. |
+
+---
+
+## 🔷 Esquema GraphQL
+
+Disponible en `http://127.0.0.1:8000/graphql/` (incluye interfaz interactiva **GraphiQL**). Soporta autenticación enviando `Authorization: Bearer <access_token>`.
+
+### Queries principales
+* `todasLasAreas`, `todasLasCategorias`, `todosLosEstados`
+* `misReclamos`: retorna los reclamos visibles según el rol del usuario autenticado junto con su historial completo (`registros`).
+* `reclamo(id: ID!)`: detalle de un reclamo e historial de auditoría.
+* `reclamosPorEstado(estado: String!)`: filtrado por nombre de estado.
+* `reclamosPublicos`: últimos 50 reclamos públicos.
+
+### Mutations principales
+* `crearReclamo(titulo: String!, descripcion: String!, categoriaId: ID!)`
+* `cambiarEstadoReclamo(reclamoId: ID!, nuevoEstadoId: ID!, observacion: String!)`
+
+---
+
+## ⚡ WebSockets y Presencia en Tiempo Real
+
+* **`ws://127.0.0.1:8000/ws/reclamos/publicos/`**
+  * Canal abierto de solo lectura para tableros ciudadanos y monitoreo global.
+  * Emite eventos `NUEVO_RECLAMO` y `CAMBIO_ESTADO` tras confirmarse cada transacción en MySQL (`transaction.on_commit`).
+* **`ws://127.0.0.1:8000/ws/reclamos/<categoria_id>/?token=<access_token>`**
+  * Canal operativo restringido a usuarios con rol `OPERADOR` o `ADMIN`.
+  * Gestiona presencia en Redis (`reclamos:presence:categoria:<id>`) con TTL de 90 segundos, renovación automática cada 30 segundos y difusión de eventos `presence_update` (`online` / `offline`).
+
+---
+
+## 🔒 Seguridad y Auditoría
+
+* **Sanitización XSS:** Todas las entradas de texto de reclamos (`titulo` y `descripcion`) se limpian con `nh3.clean()`.
+* **Integridad Referencial:** Uso de `on_delete=models.PROTECT` en estados y validación antes de eliminar usuarios con historial.
+* **Logging OWASP:** `SecurityLogRepository` registra IP, usuario y detalle ante creaciones de reclamos, cambios de estado y registros/logins mediante Google OAuth2.

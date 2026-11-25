@@ -210,11 +210,20 @@ SOCIALACCOUNT_LOGIN_ON_GET = True
 # ==============================================================================
 ASGI_APPLICATION = "VozVecinal.asgi.application"
 
+REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379")
+REDIS_SOCKET_TIMEOUT = 10
+
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [os.getenv("REDIS_URL", "redis://127.0.0.1:6379")],
+            "hosts": [
+                {
+                    "address": REDIS_URL,
+                    # Debe superar los 5 s del sondeo bloqueante de channels_redis.
+                    "socket_timeout": REDIS_SOCKET_TIMEOUT,
+                }
+            ],
         },
     },
 }

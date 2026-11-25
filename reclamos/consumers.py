@@ -3,6 +3,10 @@ import json
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 from .models import Categoria
+from .presence import (
+    register_category_presence,
+    unregister_category_presence,
+)
 
 
 @database_sync_to_async
@@ -19,6 +23,7 @@ class ReclamoNotificationConsumer(AsyncWebsocketConsumer):
         self.categoria_id = self.scope["url_route"]["kwargs"].get("categoria_id")
         self.user = self.scope.get("user")
         self.joined = False
+        self.presence_registered = False
 
         if self.categoria_id:
             # Canal operativo por categoría: requiere usuario autenticado con rol OPERADOR o ADMIN
@@ -26,8 +31,8 @@ class ReclamoNotificationConsumer(AsyncWebsocketConsumer):
                 await self.close()
                 return
 
-            rol_nombre = self.user.rol.nombre if self.user.rol else None
-            if rol_nombre not in ["OPERADOR", "ADMIN"]:
+            self.role_name = self.user.rol.nombre if self.user.rol else None
+            if self.role_name not in ["OPERADOR", "ADMIN"]:
                 await self.close()
                 return
 
@@ -48,18 +53,38 @@ class ReclamoNotificationConsumer(AsyncWebsocketConsumer):
 
         # Emite presencia online si el usuario está autenticado en un canal de categoría
         if self.categoria_id and self.user and self.user.is_authenticated:
-            await self.channel_layer.group_send(
-                self.group_name,
-                {
-                    "type": "presence_update",
-                    "payload": {
-                        "event": "presence_update",
-                        "user": self.user.username,
-                        "rol": self.user.rol.nombre if self.user.rol else None,
-                        "status": "online",
-                    },
-                },
+            existing_users, first_connection = await register_category_presence(
+                self.categoria_id,
+                self.channel_name,
+                self.user.pk,
+                self.user.username,
+                self.role_name,
             )
+            self.presence_registered = True
+            for existing_user in existing_users:
+                await self.send(
+                    text_data=json.dumps(
+                        {
+                            "event": "presence_update",
+                            **existing_user,
+                            "status": "online",
+                        }
+                    )
+                )
+
+            if first_connection:
+                await self.channel_layer.group_send(
+                    self.group_name,
+                    {
+                        "type": "presence_update",
+                        "payload": {
+                            "event": "presence_update",
+                            "user": self.user.username,
+                            "rol": self.role_name,
+                            "status": "online",
+                        },
+                    },
+                )
 
     async def disconnect(self, close_code):
         # Si la conexión fue rechazada en connect(), nunca entró al grupo
@@ -68,7 +93,20 @@ class ReclamoNotificationConsumer(AsyncWebsocketConsumer):
 
         await self.channel_layer.group_discard(self.group_name, self.channel_name)
 
-        if self.categoria_id and self.user and self.user.is_authenticated:
+        if (
+            self.categoria_id
+            and self.user
+            and self.user.is_authenticated
+            and self.presence_registered
+        ):
+            last_connection = await unregister_category_presence(
+                self.categoria_id,
+                self.channel_name,
+                self.user.pk,
+            )
+            if not last_connection:
+                return
+
             await self.channel_layer.group_send(
                 self.group_name,
                 {
@@ -76,7 +114,7 @@ class ReclamoNotificationConsumer(AsyncWebsocketConsumer):
                     "payload": {
                         "event": "presence_update",
                         "user": self.user.username,
-                        "rol": self.user.rol.nombre if self.user.rol else None,
+                        "rol": self.role_name,
                         "status": "offline",
                     },
                 },
